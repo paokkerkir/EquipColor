@@ -46,16 +46,9 @@ function EquipColor:OnInitialize()
 	if ContainerFrame_Update then
 		self:SecureHook("ContainerFrame_Update", "ContainerFrameUpdate")
 	end
---- Quest reward panel OnShow (more reliable than hooking QuestFrameRewardPanel_Show).
-	if QuestFrameRewardPanel then
-		self:HookScript(QuestFrameRewardPanel, "OnShow", "ColorUnusableQuestItems")
-	end
---- Quest log detail update. QuestLog_UpdateQuest does not exist on Kronos; use QuestLog_Update.
-	if QuestLog_Update then
-		self:SecureHook("QuestLog_Update", "ColorUnusableQuestLogItems")
-	end
-	if QuestLogFrame then
-		self:HookScript(QuestLogFrame, "OnShow", "ColorUnusableQuestLogItems")
+--- Quest log: hook the function that populates reward items in the detail view.
+	if QuestLog_UpdateQuestDetails then
+		self:SecureHook("QuestLog_UpdateQuestDetails", "ColorUnusableQuestLogItems")
 	end
 	self.slotsToColor = {}
 	self.BagFrames = {}
@@ -99,6 +92,14 @@ function EquipColor_OnEvent(this, event, arg1, arg2, arg3, arg4, arg5, arg6, arg
 	if not EquipColor:IsHooked("MerchantFrame_Update") then
 		EquipColor:SecureHook("MerchantFrame_Update", "ColorUnusableMerchantItems")
 	end
+--- Default WoW Client: Quest Reward Hook.
+	if QuestFrameRewardPanel_OnShow and not EquipColor:IsHooked("QuestFrameRewardPanel_OnShow") then
+		EquipColor:SecureHook("QuestFrameRewardPanel_OnShow", "ColorUnusableQuestItems")
+	end
+--- Default WoW Client: Quest Detail Hook.
+	if QuestFrameDetailPanel_OnShow and not EquipColor:IsHooked("QuestFrameDetailPanel_OnShow") then
+		EquipColor:SecureHook("QuestFrameDetailPanel_OnShow", "ColorUnusableQuestDetailItems")
+	end
 --- AllInOneInventory: Standard Events.
 	if IsAddOnLoaded("AllInOneInventory") then
 		if arg1 == "LeftButton" or arg1 == "RightButton" then
@@ -125,14 +126,10 @@ function EquipColor_OnEvent(this, event, arg1, arg2, arg3, arg4, arg5, arg6, arg
 	end
 --- Bagshui: Standard Events.
 	if IsAddOnLoaded("Bagshui") then
-		if arg1 == "LeftButton" or arg1 == "RightButton" then
-			EquipColor_changedFrames = EquipColor_changedFrames + 1
-		end
-		if BagshuiInventory_UpdateButton and not EquipColor:IsHooked("BagshuiInventory_UpdateButton") then
-			EquipColor:SecureHook("BagshuiInventory_UpdateButton", "AddOnCore_SetAddon")
-		end
-		if BagshuiInventory_Update and not EquipColor:IsHooked("BagshuiInventory_Update") then
-			EquipColor:SecureHook("BagshuiInventory_Update", "AddOnCore_ContainerFrame_Update")
+		if Bagshui and Bagshui.prototypes and Bagshui.prototypes.Inventory then
+			if not EquipColor:IsHooked(Bagshui.prototypes.Inventory, "Update") then
+				EquipColor:SecureHook(Bagshui.prototypes.Inventory, "Update", "BagshuiColorItems")
+			end
 		end
 	end
 --- EngInventory: Standard Events.
@@ -189,6 +186,8 @@ function EquipColor_OnEvent(this, event, arg1, arg2, arg3, arg4, arg5, arg6, arg
 		EquipColor:ColorUnusableMailItemsInSlot()
 	elseif event == "LOOT_OPENED" then
 		EquipColor:ColorUnusableLootItems()
+	elseif event == "QUEST_DETAIL" then
+		EquipColor:ColorUnusableQuestDetailItems()
 	elseif event == "QUEST_COMPLETE" then
 		EquipColor:ColorUnusableQuestItems()
 	elseif event == "QUEST_LOG_UPDATE" then
@@ -234,6 +233,7 @@ function EquipColor_OnLoad()
 	this:RegisterEvent("PLAYERBANKSLOTS_CHANGED")
 	this:RegisterEvent("MAIL_INBOX_UPDATE")
 	this:RegisterEvent("LOOT_OPENED")
+	this:RegisterEvent("QUEST_DETAIL")
 	this:RegisterEvent("QUEST_COMPLETE")
 	this:RegisterEvent("QUEST_LOG_UPDATE")
 	-- SKILL_LINES_CHANGED lets us recolor bags if skills weren't loaded at bag-open time
@@ -532,13 +532,6 @@ function EquipColor:AddOnCore_SetAddon(slot, object)
 	end
 	local bag, bagn, slotn, item
 	if IsAddOnLoaded("Bagnon_Core") or OneCore ~= nil then
-		bag = slot:GetParent()
-		bagn = bag:GetID()
-		slotn = slot:GetID()
-		item = slot:GetName()
-		EquipColor:AddOnCore_SetItemColors(bagn, slotn, item)
-	end
-	if IsAddOnLoaded("Bagshui") then
 		bag = slot:GetParent()
 		bagn = bag:GetID()
 		slotn = slot:GetID()
@@ -955,22 +948,12 @@ function EquipColor:ContainerFrameUpdate(frame)
 end
 --- Quest log reward preview (shown when clicking a quest in the quest log).
 function EquipColor:ColorUnusableQuestLogItems()
-	local numRewards = GetNumQuestLogRewards and GetNumQuestLogRewards() or 0
-	for i = 1, numRewards do
-		local itemButton = getglobal("QuestLogItem" .. i)
-		if itemButton and itemButton:IsShown() then
-			local link = GetQuestLogItemLink and GetQuestLogItemLink("reward", i)
-			local itemid = GetFromLink(link)
-			if itemid ~= -1 then
-				if CheckItemUnusable(itemid, "QuestLog:reward", i) then
-					SetItemButtonTextureVertexColor(itemButton, 1, 0, 0)
-				end
-			end
-		end
-	end
+	-- QuestFrameItems_Update("QuestLog") lays out: choices first, then spell slot, then mandatory rewards.
 	local numChoices = GetNumQuestLogChoices and GetNumQuestLogChoices() or 0
+	local numRewards = GetNumQuestLogRewards and GetNumQuestLogRewards() or 0
+	local numSpells = (GetQuestLogRewardSpell and GetQuestLogRewardSpell()) and 1 or 0
 	for i = 1, numChoices do
-		local itemButton = getglobal("QuestLogItem" .. (numRewards + i))
+		local itemButton = getglobal("QuestLogItem" .. i)
 		if itemButton and itemButton:IsShown() then
 			local link = GetQuestLogItemLink and GetQuestLogItemLink("choice", i)
 			local itemid = GetFromLink(link)
@@ -981,23 +964,65 @@ function EquipColor:ColorUnusableQuestLogItems()
 			end
 		end
 	end
-end
---- Quest reward frame.
-function EquipColor:ColorUnusableQuestItems()
-	if not (QuestFrameRewardPanel and QuestFrameRewardPanel:IsShown()) then return end
-	local numChoices = GetNumQuestChoices and GetNumQuestChoices() or 0
-	for i = 1, numChoices do
-		local itemButton = getglobal("QuestRewardItem" .. i)
+	local offset = numChoices + numSpells
+	for i = 1, numRewards do
+		local itemButton = getglobal("QuestLogItem" .. (offset + i))
 		if itemButton and itemButton:IsShown() then
-			local link = GetQuestItemLink and GetQuestItemLink("choice", i)
+			local link = GetQuestLogItemLink and GetQuestLogItemLink("reward", i)
 			local itemid = GetFromLink(link)
 			if itemid ~= -1 then
-				if CheckItemUnusable(itemid, "Quest:choice", i) then
+				if CheckItemUnusable(itemid, "QuestLog:reward", i) then
 					SetItemButtonTextureVertexColor(itemButton, 1, 0, 0)
 				end
 			end
 		end
 	end
+end
+--- Shared helper: colors items from QuestFrameItems_Update using the correct sequential index.
+--- Choices come first (1..numChoices), then optional spell slot, then mandatory rewards.
+--- getLinkFunc defaults to GetQuestItemLink; bagPrefix defaults to "Quest".
+local function ColorQuestFrameItems(questState, getNumChoices, getNumRewards, getSpell, getLinkFunc, bagPrefix)
+	getLinkFunc = getLinkFunc or GetQuestItemLink
+	bagPrefix = bagPrefix or "Quest"
+	local numChoices = getNumChoices and getNumChoices() or 0
+	local numRewards = getNumRewards and getNumRewards() or 0
+	local numSpells = (getSpell and getSpell()) and 1 or 0
+	local prefix = questState .. "Item"
+	-- Choices occupy indices 1..numChoices.
+	for i = 1, numChoices do
+		local itemButton = getglobal(prefix .. i)
+		if itemButton and itemButton:IsShown() then
+			local link = getLinkFunc and getLinkFunc("choice", i)
+			local itemid = GetFromLink(link)
+			if itemid ~= -1 then
+				if CheckItemUnusable(itemid, bagPrefix .. ":choice", i) then
+					SetItemButtonTextureVertexColor(itemButton, 1, 0, 0)
+				end
+			end
+		end
+	end
+	-- Mandatory rewards occupy indices numChoices+numSpells+1..total.
+	local offset = numChoices + numSpells
+	for i = 1, numRewards do
+		local itemButton = getglobal(prefix .. (offset + i))
+		if itemButton and itemButton:IsShown() then
+			local link = getLinkFunc and getLinkFunc("reward", i)
+			local itemid = GetFromLink(link)
+			if itemid ~= -1 then
+				if CheckItemUnusable(itemid, bagPrefix .. ":reward", i) then
+					SetItemButtonTextureVertexColor(itemButton, 1, 0, 0)
+				end
+			end
+		end
+	end
+end
+--- Quest reward frame (turning in a quest to an NPC).
+function EquipColor:ColorUnusableQuestItems()
+	ColorQuestFrameItems("QuestReward", GetNumQuestChoices, GetNumQuestRewards, GetRewardSpell)
+end
+--- Quest detail panel (accepting a quest from NPC).
+function EquipColor:ColorUnusableQuestDetailItems()
+	ColorQuestFrameItems("QuestDetail", GetNumQuestChoices, GetNumQuestRewards, GetRewardSpell)
 end
 --- Loot frame.
 function EquipColor:ColorUnusableLootItems()
@@ -1011,6 +1036,29 @@ function EquipColor:ColorUnusableLootItems()
 					local icon = getglobal("LootButton" .. i .. "IconTexture")
 						or getglobal("LootButton" .. i .. "Icon")
 					if icon then icon:SetVertexColor(1, 0, 0) end
+				end
+			end
+		end
+	end
+end
+--- Bagshui bag addon: runs after Bagshui's Inventory:Update redraws item buttons.
+--- inventoryInstance is the Bags/Bank/Keyring object (Lua self of the hooked method).
+function EquipColor:BagshuiColorItems(inventoryInstance)
+	if not (inventoryInstance and inventoryInstance.ui and inventoryInstance.ui.buttons
+			and inventoryInstance.ui.buttons.itemSlots) then return end
+	for _, button in ipairs(inventoryInstance.ui.buttons.itemSlots) do
+		if button:IsVisible() and button.bagshuiData then
+			local bagNum = button.bagshuiData.bagNum
+			local slotNum = button.bagshuiData.slotNum
+			if bagNum ~= nil and slotNum ~= nil then
+				local link = GetContainerItemLink(bagNum, slotNum)
+				local itemid, name = GetFromLink(link)
+				if itemid ~= -1 and name ~= "Unknown" then
+					if CheckItemUnusable(itemid, bagNum, slotNum) then
+						SetItemButtonTextureVertexColor(button, 1, 0, 0)
+					elseif CheckItemTooltip(bagNum, slotNum, "Learned") then
+						SetItemButtonTextureVertexColor(button, 0, 1, 1)
+					end
 				end
 			end
 		end
