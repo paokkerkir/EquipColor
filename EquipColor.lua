@@ -42,6 +42,21 @@ function EquipColor:OnInitialize()
 	self:HookScript(BankFrameItem22, "OnShow", "BankFrame_OnShow")
 	self:HookScript(BankFrameItem23, "OnShow", "BankFrame_OnShow")
 	self:HookScript(BankFrameItem24, "OnShow", "BankFrame_OnShow")
+--- Hook ContainerFrame_Update so we recolor AFTER Blizzard resets vertex colors.
+	if ContainerFrame_Update then
+		self:SecureHook("ContainerFrame_Update", "ContainerFrameUpdate")
+	end
+--- Quest reward panel OnShow (more reliable than hooking QuestFrameRewardPanel_Show).
+	if QuestFrameRewardPanel then
+		self:HookScript(QuestFrameRewardPanel, "OnShow", "ColorUnusableQuestItems")
+	end
+--- Quest log detail update. QuestLog_UpdateQuest does not exist on Kronos; use QuestLog_Update.
+	if QuestLog_Update then
+		self:SecureHook("QuestLog_Update", "ColorUnusableQuestLogItems")
+	end
+	if QuestLogFrame then
+		self:HookScript(QuestLogFrame, "OnShow", "ColorUnusableQuestLogItems")
+	end
 	self.slotsToColor = {}
 	self.BagFrames = {}
 	self.BagFrames = {
@@ -108,6 +123,18 @@ function EquipColor_OnEvent(this, event, arg1, arg2, arg3, arg4, arg5, arg6, arg
 			EquipColor:SecureHook("BagnonFrame_Update", "AddOnCore_ContainerFrame_Update")
 		end
 	end
+--- Bagshui: Standard Events.
+	if IsAddOnLoaded("Bagshui") then
+		if arg1 == "LeftButton" or arg1 == "RightButton" then
+			EquipColor_changedFrames = EquipColor_changedFrames + 1
+		end
+		if BagshuiInventory_UpdateButton and not EquipColor:IsHooked("BagshuiInventory_UpdateButton") then
+			EquipColor:SecureHook("BagshuiInventory_UpdateButton", "AddOnCore_SetAddon")
+		end
+		if BagshuiInventory_Update and not EquipColor:IsHooked("BagshuiInventory_Update") then
+			EquipColor:SecureHook("BagshuiInventory_Update", "AddOnCore_ContainerFrame_Update")
+		end
+	end
 --- EngInventory: Standard Events.
 	if IsAddOnLoaded("EngBags") then
 		if arg1 == "LeftButton" or (arg1 == "RightButton") then
@@ -160,19 +187,27 @@ function EquipColor_OnEvent(this, event, arg1, arg2, arg3, arg4, arg5, arg6, arg
 	end
 	if event == "MAIL_INBOX_UPDATE" then
 		EquipColor:ColorUnusableMailItemsInSlot()
+	elseif event == "LOOT_OPENED" then
+		EquipColor:ColorUnusableLootItems()
+	elseif event == "QUEST_COMPLETE" then
+		EquipColor:ColorUnusableQuestItems()
+	elseif event == "QUEST_LOG_UPDATE" then
+		EquipColor:ColorUnusableQuestLogItems()
+	elseif event == "SKILL_LINES_CHANGED" then
+		-- Skills may not have been ready when the bag first opened; recolor now.
+		EquipColor:ColorUnusableItems()
+		if BankFrame:IsVisible() then
+			EquipColor:ColorUnusableBankItems()
+		end
 	elseif event == "BAG_UPDATE" or event == "ITEM_LOCK_CHANGED" or event == "BAG_UPDATE_COOLDOWN"
 			or event == "UPDATE_INVENTORY_ALERTS" then
-		if EquipColor.BagFrames[1].bagsShown > 0 then
-			EquipColor:ColorUnusableItems()
-		end
+		EquipColor:ColorUnusableItems()
 		if BankFrame:IsVisible() then
 			EquipColor:ColorUnusableBankItems()
 		end
 		EquipColor:AddOnCore_ContainerFrame_Update()
 	elseif event == "PLAYERBANKSLOTS_CHANGED" or event == "BANKFRAME_OPENED" then
-		if EquipColor.BagFrames[1].bagsShown > 0 then
-			EquipColor:ColorUnusableItems()
-		end
+		EquipColor:ColorUnusableItems()
 		if BankFrame:IsVisible() then
 			EquipColor:ColorUnusableBankItems()
 		end
@@ -198,6 +233,11 @@ function EquipColor_OnLoad()
 	this:RegisterEvent("BANKFRAME_OPENED")
 	this:RegisterEvent("PLAYERBANKSLOTS_CHANGED")
 	this:RegisterEvent("MAIL_INBOX_UPDATE")
+	this:RegisterEvent("LOOT_OPENED")
+	this:RegisterEvent("QUEST_COMPLETE")
+	this:RegisterEvent("QUEST_LOG_UPDATE")
+	-- SKILL_LINES_CHANGED lets us recolor bags if skills weren't loaded at bag-open time
+	this:RegisterEvent("SKILL_LINES_CHANGED")
 end
 --- Debug Parser.
 function EquipColor_BMsg(msg)
@@ -208,7 +248,7 @@ local function GetFromLink(link)
 	local id = -1
 	local name = "Unknown"
 	if link ~= nil then
-		for i, n in string.gfind(link, "|c%x+|Hitem:(%d+):%d+:%d+:%d+|h%[(.-)%]|h|r") do
+		for i, n in string.gfind(link, "|c%x+|Hitem:(%d+):[^|]+|h%[(.-)%]|h|r") do
 			if i ~= nil then id = i end
 			if n ~= nil then name = n end
 		end
@@ -235,18 +275,59 @@ local function GetBankFrameInventorySlot(slot)
 	end
 	return nil
 end
---- Automatic Hidden Tool Tip Parser.
-local function CheckItemTooltip(bag, slot, itemtype)
-	EquipColor_ScanTooltip:ClearLines()
+--- Tooltip population helper: prefers SetHyperlink for Kronos pserver compatibility.
+--- SetBagItem/SetInventoryItem/SetInboxItem/SetMerchantItem are unreliable on Kronos;
+--- SetHyperlink is more fundamental and works from the item link alone.
+local function SafeSetTooltip(bag, slot)
+	local link
+	if bag == "MailBox" then
+		link = GetInboxItemLink and GetInboxItemLink(slot)
+	elseif bag == "Merchant" then
+		link = GetMerchantItemLink and GetMerchantItemLink(slot)
+	elseif bag == "Quest:choice" then
+		link = GetQuestItemLink and GetQuestItemLink("choice", slot)
+	elseif bag == "Quest:reward" then
+		link = GetQuestItemLink and GetQuestItemLink("reward", slot)
+	elseif bag == "QuestLog:reward" then
+		link = GetQuestLogItemLink and GetQuestLogItemLink("reward", slot)
+	elseif bag == "QuestLog:choice" then
+		link = GetQuestLogItemLink and GetQuestLogItemLink("choice", slot)
+	elseif bag == "Loot" then
+		link = GetLootSlotLink and GetLootSlotLink(slot)
+	else
+		-- Works for both normal bags (0-11) and BANK_CONTAINER (-1)
+		link = GetContainerItemLink(bag, slot)
+	end
+	if link then
+		local ok = pcall(EquipColor_ScanTooltip.SetHyperlink, EquipColor_ScanTooltip, link)
+		if ok then return end
+	end
+	-- SetHyperlink failed or no link: fall back to container-specific methods
 	if bag == -1 then
 		EquipColor_ScanTooltip:SetInventoryItem("player", GetBankFrameInventorySlot(slot))
 	elseif bag == "MailBox" then
 		EquipColor_ScanTooltip:SetInboxItem(slot)
 	elseif bag == "Merchant" then
 		EquipColor_ScanTooltip:SetMerchantItem(slot)
+	elseif bag == "QuestLog:reward" then
+		EquipColor_ScanTooltip:SetQuestLogItem("reward", slot)
+	elseif bag == "QuestLog:choice" then
+		EquipColor_ScanTooltip:SetQuestLogItem("choice", slot)
+	elseif bag == "Quest:choice" then
+		EquipColor_ScanTooltip:SetQuestItem("choice", slot)
+	elseif bag == "Quest:reward" then
+		EquipColor_ScanTooltip:SetQuestItem("reward", slot)
+	elseif bag == "Loot" then
+		EquipColor_ScanTooltip:SetLootItem(slot)
 	else
 		EquipColor_ScanTooltip:SetBagItem(bag, slot)
 	end
+end
+
+--- Automatic Hidden Tool Tip Parser.
+local function CheckItemTooltip(bag, slot, itemtype)
+	EquipColor_ScanTooltip:ClearLines()
+	SafeSetTooltip(bag, slot)
 	if itemtype == "Weapon" then
 		local EquipColor_Tooltip = getglobal('EquipColor_ScanTooltipTextLeft2'):GetText()
 		if EquipColor_Tooltip then
@@ -338,6 +419,21 @@ local function CheckItemTooltip(bag, slot, itemtype)
 				return false
 			end
 		end
+	elseif itemtype == "ClassRestricted" then
+		local playerClass = UnitClass("player")
+		for line = 2, 12 do
+			local lineWidget = getglobal('EquipColor_ScanTooltipTextLeft' .. line)
+			if lineWidget then
+				local text = lineWidget:GetText()
+				if text then
+					local _, _, classReq = string.find(text, "Classes%: (.+)")
+					if classReq then
+						return not string.find(classReq, playerClass)
+					end
+				end
+			end
+		end
+		return false
 	else
 		return false
 	end
@@ -436,6 +532,13 @@ function EquipColor:AddOnCore_SetAddon(slot, object)
 	end
 	local bag, bagn, slotn, item
 	if IsAddOnLoaded("Bagnon_Core") or OneCore ~= nil then
+		bag = slot:GetParent()
+		bagn = bag:GetID()
+		slotn = slot:GetID()
+		item = slot:GetName()
+		EquipColor:AddOnCore_SetItemColors(bagn, slotn, item)
+	end
+	if IsAddOnLoaded("Bagshui") then
 		bag = slot:GetParent()
 		bagn = bag:GetID()
 		slotn = slot:GetID()
@@ -600,6 +703,9 @@ function EquipColor:AddOnCore_SetItemColors(bagn, slotn, item)
 						--itemEquipLoc .. "]")
 				end
 			end
+			if CheckItemTooltip(bagn, slotn, "ClassRestricted") then
+				table.insert(self.slotsToColor, item)
+			end
 		end
 	end
 end
@@ -609,7 +715,7 @@ function EquipColor:ColorItems(bag, slot, itemFrame, frame)
 	local itemid, name = GetFromLink(GetContainerItemLink(bag, slot))
 	if itemid ~= -1 and name ~= "Unknown" then
 		local itemname, _, _, itemminlevel, itemclass, itemsubclass, _, itemEquipLoc = GetItemInfo(itemid)
-		if itemFrame ~= nil and itemFrame:IsVisible() and itemclass ~= nil and itemsubclass ~= nil then
+		if itemFrame ~= nil and itemFrame:IsShown() and itemclass ~= nil and itemsubclass ~= nil then
 			--if frame ~= nil then
 				--EquipColor_BMsg("ColorItems(Items): ItemName [" .. itemname .. "] ItemID [" .. itemid .. "]")
 			--end
@@ -726,28 +832,28 @@ function EquipColor:ColorItems(bag, slot, itemFrame, frame)
 					end
 				end
 			end
+			if CheckItemTooltip(bag, slot, "ClassRestricted") then
+				SetItemButtonTextureVertexColor(itemFrame, 1, 0, 0)
+			end
 		end
 	end
 end
 --- Called by BagFrame OnEvent handler to update all bags and slots.
 function EquipColor:ColorUnusableItems()
-	for bag = 0, 11, 1 do
-		for slot = 1, GetContainerNumSlots(bag) do
-			local bagName = GetContainerFrameName(bag)
-			if bagName then
-				local itemFrame = getglobal(bagName .. "Item" .. (GetContainerNumSlots(bag) - (slot - 1)))
-				EquipColor:ColorItems(bag, slot, itemFrame, nil) --"ColorUnusableItems")
-			end
+	for i = 1, NUM_CONTAINER_FRAMES do
+		local frame = getglobal("ContainerFrame" .. i)
+		if frame and frame:IsShown() then
+			EquipColor:ContainerFrameUpdate(frame)
 		end
 	end
 end
 --- Called by BagFrame OnShow hooks handler. Updates the toggled bag.
 function EquipColor:ColorUnusableItemsInBag(bag)
-	for slot = 1, GetContainerNumSlots(bag) do
-		local bagName = GetContainerFrameName(bag)
-		if bagName then
-			local itemFrame = getglobal(bagName .. "Item" .. (GetContainerNumSlots(bag) - (slot-1)))
-			EquipColor:ColorItems(bag, slot, itemFrame, nil) --"ColorUnusableItemsInBag")
+	for i = 1, NUM_CONTAINER_FRAMES do
+		local frame = getglobal("ContainerFrame" .. i)
+		if frame and frame:IsShown() and frame:GetID() == bag then
+			EquipColor:ContainerFrameUpdate(frame)
+			return
 		end
 	end
 end
@@ -791,6 +897,125 @@ function EquipColor:ColorUnusableMailItemsInSlot()
 		end
 	end
 end
+--- Shared usability check for quest/loot/merchant frames.
+--- bag and slot identify the item for tooltip-based class checks.
+--- Returns true if the item should be colored red (unusable).
+local function CheckItemUnusable(itemid, bag, slot)
+	local _, _, _, itemminlevel, itemclass, itemsubclass, _, itemEquipLoc = GetItemInfo(itemid)
+	if itemclass == nil or itemsubclass == nil then return false end
+	if itemminlevel > UnitLevel("player") then
+		return true
+	elseif (itemclass == "Weapon" or itemclass == "Armor") and itemsubclass ~= "Miscellaneous" then
+		if CheckCharacterSkills(itemsubclass) == false then
+			return true
+		elseif itemclass == "Weapon" and itemsubclass == "Fishing Pole" then
+			local skillName, skillRank = CheckCharacterSkills("Fishing", true)
+			local profName, profLevel = CheckItemTooltip(bag, slot, itemsubclass)
+			if profName == "Fishing" and skillName == "Fishing" then
+				return tonumber(profLevel) > skillRank
+			end
+		elseif itemclass == "Armor" then
+			return CheckItemTooltip(bag, slot, "ClassArmor") == false
+		elseif CheckCharacterSpells("Dual Wield") == false then
+			return CheckItemTooltip(bag, slot, itemclass) == true
+		end
+	elseif itemclass == "Projectile" or itemclass == "Quiver" then
+		if CheckCharacterSkills("Bows") == false and CheckCharacterSkills("Crossbows") == false then
+			if itemsubclass == "Arrow" or itemsubclass == "Quiver" then return true end
+		end
+		if CheckCharacterSkills("Guns") == false then
+			if itemsubclass == "Bullet" or itemsubclass == "Ammo Pouch" then return true end
+		end
+	elseif itemEquipLoc == "INVTYPE_TRINKET" then
+		return CheckItemTooltip(bag, slot, itemEquipLoc) == false
+	end
+	-- Catch-all: consumables and other items with explicit "Classes: X" restrictions.
+	if CheckItemTooltip(bag, slot, "ClassRestricted") then
+		return true
+	end
+	return false
+end
+--- Same pattern as ColorUnusableMerchantItems: link → GetFromLink → CheckItemUnusable.
+function EquipColor:ContainerFrameUpdate(frame)
+	if not (frame and frame:IsShown()) then return end
+	local bag = frame:GetID()
+	local numSlots = GetContainerNumSlots(bag)
+	for slot = 1, numSlots do
+		local itemButton = getglobal(frame:GetName() .. "Item" .. (numSlots - (slot - 1)))
+		if itemButton and itemButton:IsShown() then
+			local link = GetContainerItemLink(bag, slot)
+			local itemid = GetFromLink(link)
+			if itemid ~= -1 then
+				if CheckItemUnusable(itemid, bag, slot) then
+					SetItemButtonTextureVertexColor(itemButton, 1, 0, 0)
+				end
+			end
+		end
+	end
+end
+--- Quest log reward preview (shown when clicking a quest in the quest log).
+function EquipColor:ColorUnusableQuestLogItems()
+	local numRewards = GetNumQuestLogRewards and GetNumQuestLogRewards() or 0
+	for i = 1, numRewards do
+		local itemButton = getglobal("QuestLogItem" .. i)
+		if itemButton and itemButton:IsShown() then
+			local link = GetQuestLogItemLink and GetQuestLogItemLink("reward", i)
+			local itemid = GetFromLink(link)
+			if itemid ~= -1 then
+				if CheckItemUnusable(itemid, "QuestLog:reward", i) then
+					SetItemButtonTextureVertexColor(itemButton, 1, 0, 0)
+				end
+			end
+		end
+	end
+	local numChoices = GetNumQuestLogChoices and GetNumQuestLogChoices() or 0
+	for i = 1, numChoices do
+		local itemButton = getglobal("QuestLogItem" .. (numRewards + i))
+		if itemButton and itemButton:IsShown() then
+			local link = GetQuestLogItemLink and GetQuestLogItemLink("choice", i)
+			local itemid = GetFromLink(link)
+			if itemid ~= -1 then
+				if CheckItemUnusable(itemid, "QuestLog:choice", i) then
+					SetItemButtonTextureVertexColor(itemButton, 1, 0, 0)
+				end
+			end
+		end
+	end
+end
+--- Quest reward frame.
+function EquipColor:ColorUnusableQuestItems()
+	if not (QuestFrameRewardPanel and QuestFrameRewardPanel:IsShown()) then return end
+	local numChoices = GetNumQuestChoices and GetNumQuestChoices() or 0
+	for i = 1, numChoices do
+		local itemButton = getglobal("QuestRewardItem" .. i)
+		if itemButton and itemButton:IsShown() then
+			local link = GetQuestItemLink and GetQuestItemLink("choice", i)
+			local itemid = GetFromLink(link)
+			if itemid ~= -1 then
+				if CheckItemUnusable(itemid, "Quest:choice", i) then
+					SetItemButtonTextureVertexColor(itemButton, 1, 0, 0)
+				end
+			end
+		end
+	end
+end
+--- Loot frame.
+function EquipColor:ColorUnusableLootItems()
+	for i = 1, LOOTFRAME_NUMBUTTONS do
+		local lootButton = getglobal("LootButton" .. i)
+		if lootButton and lootButton:IsShown() then
+			local link = GetLootSlotLink and GetLootSlotLink(i)
+			local itemid = GetFromLink(link)
+			if itemid ~= -1 then
+				if CheckItemUnusable(itemid, "Loot", i) then
+					local icon = getglobal("LootButton" .. i .. "IconTexture")
+						or getglobal("LootButton" .. i .. "Icon")
+					if icon then icon:SetVertexColor(1, 0, 0) end
+				end
+			end
+		end
+	end
+end
 --- Called by Default WoW Client Event handler. All Merchant/Vendors should trigger this.
 function EquipColor:ColorUnusableMerchantItems()
 	if MerchantFrame:IsVisible() then
@@ -800,14 +1025,20 @@ function EquipColor:ColorUnusableMerchantItems()
 			local itemButton = getglobal("MerchantItem" .. i .. "ItemButton")
 			local merchantButton = getglobal("MerchantItem" .. i)
 			if index <= numMerchantItems then
-				local itemName, _, _, _, _, _ = GetMerchantItemInfo(index)
 				local hasLearned = CheckItemTooltip("Merchant", index, "Learned")
 				if hasLearned then
 					SetItemButtonNameFrameVertexColor(merchantButton, 0, 1, 0)
 					SetItemButtonSlotVertexColor(merchantButton, 0, 1, 0)
 					SetItemButtonTextureVertexColor(itemButton, 0, 1, 0)
 					SetItemButtonNormalTextureVertexColor(itemButton, 0, 1, 0)
-					--EquipColor_BMsg("ColorUnusableMerchantItems: Player has already learned: " .. itemName)
+				else
+					local link = GetMerchantItemLink and GetMerchantItemLink(index)
+					local itemid = GetFromLink(link)
+					if itemid ~= -1 then
+						if CheckItemUnusable(itemid, "Merchant", index) then
+							SetItemButtonTextureVertexColor(itemButton, 1, 0, 0)
+						end
+					end
 				end
 			end
 		end
