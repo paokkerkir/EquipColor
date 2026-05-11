@@ -215,12 +215,39 @@ end
 --- OnUpdate.
 EquipColor_checkFrames = 1
 EquipColor_changedFrames = 1
+EquipColor_pendingRecolor = false
+EquipColor_pendingRecolorTime = 0
 function EquipColor_OnUpdate(arg1)
 	EquipColor_checkFrames = table.getn(EquipColor.slotsToColor)
 	if (EquipColor_checkFrames ~= EquipColor_changedFrames) then
 		--EquipColor_BMsg("EquipColor_OnUpdate: Fired!")
 		EquipColor:AddOnCore_ContainerFrame_Update()
 		EquipColor_changedFrames = table.getn(EquipColor.slotsToColor)
+	end
+	-- Retry coloring after a short delay when GetItemInfo returned nil (uncached items).
+	if EquipColor_pendingRecolor then
+		EquipColor_pendingRecolorTime = EquipColor_pendingRecolorTime + arg1
+		if EquipColor_pendingRecolorTime > 0.5 then
+			EquipColor_pendingRecolor = false
+			EquipColor_pendingRecolorTime = 0
+			EquipColor:ColorUnusableItems()
+			if BankFrame and BankFrame:IsVisible() then
+				EquipColor:ColorUnusableBankItems()
+			end
+			if MerchantFrame and MerchantFrame:IsVisible() then
+				EquipColor:ColorUnusableMerchantItems()
+			end
+			if QuestFrame and QuestFrame:IsVisible() then
+				if QuestFrameRewardPanel and QuestFrameRewardPanel:IsVisible() then
+					EquipColor:ColorUnusableQuestItems()
+				elseif QuestFrameDetailPanel and QuestFrameDetailPanel:IsVisible() then
+					EquipColor:ColorUnusableQuestDetailItems()
+				end
+			end
+			if QuestLogFrame and QuestLogFrame:IsVisible() then
+				EquipColor:ColorUnusableQuestLogItems()
+			end
+		end
 	end
 end
 --- OnLoad.
@@ -606,7 +633,12 @@ function EquipColor:AddOnCore_SetItemColors(bagn, slotn, item)
 	local itemid, name = GetFromLink(GetContainerItemLink(bagn, slotn))
 	if itemid ~= -1 and name ~= "Unknown" then
 		local itemname, _, _, itemminlevel, itemclass, itemsubclass, _, itemEquipLoc = GetItemInfo(itemid)
-		if itemclass ~= nil and itemsubclass ~= nil then
+		if itemclass == nil or itemsubclass == nil then
+			if not EquipColor_pendingRecolor then
+				EquipColor_pendingRecolor = true
+				EquipColor_pendingRecolorTime = 0
+			end
+		else
 			--EquipColor_BMsg("SetItemColors(Items): ItemName [" .. itemname .. "] ItemID [" .. itemid .. "]")
 			if itemminlevel > UnitLevel("player") then
 				table.insert(self.slotsToColor, item)
@@ -708,7 +740,12 @@ function EquipColor:ColorItems(bag, slot, itemFrame, frame)
 	local itemid, name = GetFromLink(GetContainerItemLink(bag, slot))
 	if itemid ~= -1 and name ~= "Unknown" then
 		local itemname, _, _, itemminlevel, itemclass, itemsubclass, _, itemEquipLoc = GetItemInfo(itemid)
-		if itemFrame ~= nil and itemFrame:IsShown() and itemclass ~= nil and itemsubclass ~= nil then
+		if itemclass == nil or itemsubclass == nil then
+			if not EquipColor_pendingRecolor then
+				EquipColor_pendingRecolor = true
+				EquipColor_pendingRecolorTime = 0
+			end
+		elseif itemFrame ~= nil and itemFrame:IsShown() then
 			--if frame ~= nil then
 				--EquipColor_BMsg("ColorItems(Items): ItemName [" .. itemname .. "] ItemID [" .. itemid .. "]")
 			--end
@@ -895,7 +932,13 @@ end
 --- Returns true if the item should be colored red (unusable).
 local function CheckItemUnusable(itemid, bag, slot)
 	local _, _, _, itemminlevel, itemclass, itemsubclass, _, itemEquipLoc = GetItemInfo(itemid)
-	if itemclass == nil or itemsubclass == nil then return false end
+	if itemclass == nil or itemsubclass == nil then
+		if not EquipColor_pendingRecolor then
+			EquipColor_pendingRecolor = true
+			EquipColor_pendingRecolorTime = 0
+		end
+		return false
+	end
 	if itemminlevel > UnitLevel("player") then
 		return true
 	elseif (itemclass == "Weapon" or itemclass == "Armor") and itemsubclass ~= "Miscellaneous" then
