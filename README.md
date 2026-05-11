@@ -1,9 +1,11 @@
-# EquipColor v1.01
+# EquipColor v1.02-Kronos
 
 An addon for World of Warcraft version 1.12 that colors unusable items red in the inventory and the bank. 
 It also colors known recipes green in the inventory and the bank.
 
-It can work with the default bags UI or with the following addons:
-Bagnon, Banknon, AllInOneInventory, EngInventory and SUCC-bag. Although SUCC-bag has a small bug as of now.
+Adapted to work properly with Kronos server.
 
-Updated: July 10, 2017
+It can work with the default bags UI or with the following addons:
+Bagnon, Banknon, Bagshui, AllInOneInventory, EngInventory and SUCC-bag. Although SUCC-bag has a small bug as of now.
+
+Updated: May 11, 2026
